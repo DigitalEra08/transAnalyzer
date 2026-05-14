@@ -1,0 +1,42 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #0c0f14;
+  --bg-elevated: #131822;
+  --border: #252b38;
+  --text: #e8ecf4;
+  --muted: #8b95a8;
+  --accent: #3d8bfd;
+  --accent-soft: rgba(61, 139, 253, 0.15);
+  --success: #34c759;
+  --warning: #ff9f0a;
+  --danger: #ff453a;
+  --radius: 14px;
+  --font: 'DM Sans', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: var(--font);
+  background: radial-gradient(1200px 800px at 10% -10%, #1a2440 0%, transparent 55%),
+    radial-gradient(900px 600px at 100% 0%, #152a22 0%, transparent 50%), var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font-family: inherit;
+}
