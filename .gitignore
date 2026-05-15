@@ -1,6 +1,7 @@
 # Exclude Folders
 files/
 training_feedback/**/*
+assets/*
 
 ### Firebase ###
 .idea
