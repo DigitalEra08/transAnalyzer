@@ -1,0 +1,4 @@
+assets/**
+training_feedback/**
+frontend/node_modules/**
+*.log

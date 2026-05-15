@@ -10,12 +10,20 @@
     "scanner": "node scanner.js",
     "dev:scanner": "nodemon scanner.js",
     "dev:ui": "npm run dev --prefix frontend",
-    "build:ui": "npm run build --prefix frontend"
+    "build:ui": "npm run build --prefix frontend",
+    "build": "npm run build:ui",
+    "vercel-build": "npm install --prefix frontend && npm run build --prefix frontend"
+  },
+  "engines": {
+    "node": "20.x"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "optionalDependencies": {
+    "@img/sharp-linux-x64": "^0.34.5"
+  },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.0",
     "cors": "^2.8.5",

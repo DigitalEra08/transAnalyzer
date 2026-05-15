@@ -1,26 +1,21 @@
 {
     "version": 2,
+    "installCommand": "npm install && npm install --prefix frontend",
     "builds": [
         {
             "src": "server.js",
-            "use": "@vercel/node"
-        },
-        {
-            "src": "frontend/**",
-            "use": "@vercel/static"
+            "use": "@vercel/node",
+            "config": {
+                "maxDuration": 60,
+                "memory": 3008,
+                "nodeVersion": "20.x"
+            }
         }
     ],
     "routes": [
         {
-            "src": "/api/(.*)",
-            "dest": "/server.js"
-        },
-        {
-            "handle": "filesystem"
-        },
-        {
             "src": "/(.*)",
-            "dest": "/frontend/$1"
+            "dest": "/server.js"
         }
     ]
 }

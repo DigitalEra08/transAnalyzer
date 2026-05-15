@@ -1,16 +1,24 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
-const { runAnalysis } = require('./scanner');
 
+function getRunAnalysis() {
+    return require('./scanner').runAnalysis;
+}
+
+const IS_VERCEL = Boolean(process.env.VERCEL);
 const PORT = process.env.PORT || 5001;
 const ROOT = __dirname;
-const IMG_DIR = path.join(ROOT, 'assets', 'images');
-const PDF_DIR = path.join(ROOT, 'assets', 'pdfs');
-const UPLOADS_ROOT = path.join(ROOT, 'assets', 'uploads');
+const ASSETS_ROOT = IS_VERCEL
+    ? path.join(os.tmpdir(), 'transanalyzer')
+    : path.join(ROOT, 'assets');
+const IMG_DIR = path.join(ASSETS_ROOT, 'images');
+const PDF_DIR = path.join(ASSETS_ROOT, 'pdfs');
+const UPLOADS_ROOT = path.join(ASSETS_ROOT, 'uploads');
 
 function ensureAssetDirs() {
     fs.mkdirSync(IMG_DIR, { recursive: true });
@@ -146,7 +154,7 @@ app.post(
                 });
             }
 
-            const rawOut = await runAnalysis({
+            const rawOut = await getRunAnalysis()({
                 imageDir: req.jobImgDir,
                 pdfDir: req.jobPdfDir,
             });
@@ -215,13 +223,17 @@ app.use((err, req, res, next) => {
     next();
 });
 
-ensureAssetDirs();
-app.listen(PORT, () => {
-    const ui = fs.existsSync(frontendDist);
-    console.log(`API listening on http://localhost:${PORT}`);
-    if (ui) {
-        console.log(`Web UI (production build): http://localhost:${PORT}/`);
-    } else {
-        console.log('Tip: run npm run build:ui then restart to serve the web UI from this port.');
-    }
-});
+module.exports = app;
+
+if (!IS_VERCEL) {
+    ensureAssetDirs();
+    app.listen(PORT, () => {
+        const ui = fs.existsSync(frontendDist);
+        console.log(`API listening on http://localhost:${PORT}`);
+        if (ui) {
+            console.log(`Web UI (production build): http://localhost:${PORT}/`);
+        } else {
+            console.log('Tip: run npm run build:ui then restart to serve the web UI from this port.');
+        }
+    });
+}
