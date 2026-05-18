@@ -14,8 +14,7 @@ async function getOCRText(imageBuffer) {
     // In v5, loadLanguage and initialize are handled automatically by createWorker
     // but you can still set parameters here.
     await worker.setParameters({
-        tessedit_char_whi
-        telist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/-. ',
+        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/-. ',
     });
 
     const { data: { text, confidence } } = await worker.recognize(imageBuffer);
