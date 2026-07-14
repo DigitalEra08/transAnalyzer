@@ -1,94 +1,50 @@
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const crypto = require('crypto');
+
+// Load environment variables from .env file
+try {
+    require('dotenv').config();
+} catch (e) {
+    const dotenvPath = path.join(__dirname, '.env');
+    if (fs.existsSync(dotenvPath)) {
+        const envConfig = fs.readFileSync(dotenvPath, 'utf-8');
+        envConfig.split(/\r?\n/).forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) return;
+            const firstEquals = trimmed.indexOf('=');
+            if (firstEquals === -1) return;
+            const key = trimmed.substring(0, firstEquals).trim();
+            let val = trimmed.substring(firstEquals + 1).trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.substring(1, val.length - 1);
+            }
+            if (process.env[key] === undefined) {
+                process.env[key] = val;
+            }
+        });
+    }
+}
+
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
+const { uploadBuffer } = require('./utils/cloudinary');
 
 function getRunAnalysis() {
     return require('./scanner').runAnalysis;
 }
 
-const IS_VERCEL = Boolean(process.env.VERCEL);
-const PORT = process.env.PORT || 5001;
+const IS_VERCEL = String(process.env.VERCEL).toLowerCase() === 'true';
+const PORT = parseInt(process.env.PORT, 10) || 5001;
 const ROOT = __dirname;
-const ASSETS_ROOT = IS_VERCEL
-    ? path.join(os.tmpdir(), 'transanalyzer')
-    : path.join(ROOT, 'assets');
-const IMG_DIR = path.join(ASSETS_ROOT, 'images');
-const PDF_DIR = path.join(ASSETS_ROOT, 'pdfs');
-const UPLOADS_ROOT = path.join(ASSETS_ROOT, 'uploads');
 
-function ensureAssetDirs() {
-    fs.mkdirSync(IMG_DIR, { recursive: true });
-    fs.mkdirSync(PDF_DIR, { recursive: true });
-    fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
-}
-
-/**
- * Windows often returns EBUSY when deleting files still held by Sharp/antivirus
- * or when two requests overlap. Per-job dirs avoid deleting in-use files; this
- * handles leftover cleanup with backoff.
- */
-async function rmWithRetry(dir, attempts = 12, baseDelayMs = 80) {
-    for (let i = 0; i < attempts; i++) {
-        try {
-            await fs.promises.rm(dir, { recursive: true, force: true });
-            return;
-        } catch (err) {
-            if (err.code === 'ENOENT') return;
-            const retryable = err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'ENOTEMPTY';
-            if (retryable && i < attempts - 1) {
-                await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)));
-                continue;
-            }
-            throw err;
-        }
-    }
-}
-
-function emptyDir(dir) {
-    if (!fs.existsSync(dir)) return;
-    for (const name of fs.readdirSync(dir)) {
-        fs.unlinkSync(path.join(dir, name));
-    }
-}
-
-function attachJobUploadDirs(req, res, next) {
-    try {
-        const jobId = `${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
-        const jobRoot = path.join(UPLOADS_ROOT, jobId);
-        req.jobRoot = jobRoot;
-        req.jobImgDir = path.join(jobRoot, 'images');
-        req.jobPdfDir = path.join(jobRoot, 'pdfs');
-        fs.mkdirSync(req.jobImgDir, { recursive: true });
-        fs.mkdirSync(req.jobPdfDir, { recursive: true });
-        next();
-    } catch (e) {
-        next(e);
-    }
-}
-
-const storage = multer.diskStorage({
-    destination(req, file, cb) {
-        if (!req.jobImgDir || !req.jobPdfDir) {
-            return cb(new Error('Upload job directories not initialized.'));
-        }
-        if (file.fieldname === 'statementPdfs') {
-            cb(null, req.jobPdfDir);
-        } else {
-            cb(null, req.jobImgDir);
-        }
-    },
-    filename(req, file, cb) {
-        const base = path.basename(file.originalname).replace(/[^\w.\-()+ ]/g, '_');
-        cb(null, `${Date.now()}_${Math.random().toString(36).slice(2, 10)}_${base}`);
-    },
-});
-
+// ──────────────────────────────────────────────
+// Multer — memory storage (no disk writes)
+// Files stay in RAM as buffers, get uploaded to
+// Cloudinary, then passed to the scanner.
+// ──────────────────────────────────────────────
 const upload = multer({
-    storage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: 40 * 1024 * 1024, files: 80 },
     fileFilter(req, file, cb) {
         if (file.fieldname === 'transactionImages') {
@@ -119,30 +75,11 @@ app.get('/api/health', (req, res) => {
 
 app.post(
     '/api/analyze',
-    (req, res, next) => {
-        try {
-            ensureAssetDirs();
-            next();
-        } catch (e) {
-            next(e);
-        }
-    },
-    attachJobUploadDirs,
     upload.fields([
         { name: 'transactionImages', maxCount: 50 },
         { name: 'statementPdfs', maxCount: 30 },
     ]),
     async (req, res) => {
-        const jobRoot = req.jobRoot;
-        if (jobRoot) {
-            res.on('finish', () => {
-                setImmediate(() => {
-                    rmWithRetry(jobRoot).catch((e) =>
-                        console.warn(`Upload job cleanup (${jobRoot}): ${e.message}`)
-                    );
-                });
-            });
-        }
         try {
             const imageFiles = req.files?.transactionImages || [];
             const pdfFiles = req.files?.statementPdfs || [];
@@ -154,9 +91,52 @@ app.post(
                 });
             }
 
+            // ── Upload images to Cloudinary ──
+            console.log(`☁️ Uploading ${imageFiles.length} images to Cloudinary…`);
+            const imageUploadResults = await Promise.all(
+                imageFiles.map((f) =>
+                    uploadBuffer(f.buffer, {
+                        folder: 'transanalyzer/images',
+                        publicId: `${Date.now()}_${f.originalname.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+                        resourceType: 'image',
+                    })
+                )
+            );
+
+            // ── Upload PDFs to Cloudinary ──
+            let pdfUploadResults = [];
+            if (pdfFiles.length > 0) {
+                console.log(`☁️ Uploading ${pdfFiles.length} PDFs to Cloudinary…`);
+                pdfUploadResults = await Promise.all(
+                    pdfFiles.map((f) =>
+                        uploadBuffer(f.buffer, {
+                            folder: 'transanalyzer/pdfs',
+                            publicId: `${Date.now()}_${f.originalname.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+                            resourceType: 'raw',
+                        })
+                    )
+                );
+            }
+
+            console.log('✅ Cloudinary uploads complete. Running analysis…');
+
+            // ── Pass in-memory buffers to scanner ──
+            // The scanner now works with buffers, no disk paths needed.
+            const imageBuffers = imageFiles.map((f, i) => ({
+                name: f.originalname,
+                buffer: f.buffer,
+                cloudinaryUrl: imageUploadResults[i]?.secure_url,
+            }));
+
+            const pdfBuffers = pdfFiles.map((f, i) => ({
+                name: f.originalname,
+                buffer: f.buffer,
+                cloudinaryUrl: pdfUploadResults[i]?.secure_url,
+            }));
+
             const rawOut = await getRunAnalysis()({
-                imageDir: req.jobImgDir,
-                pdfDir: req.jobPdfDir,
+                imageBuffers,
+                pdfBuffers,
             });
 
             if (rawOut && rawOut.error) {
@@ -181,6 +161,10 @@ app.post(
                     mode: hasVerificationShape
                         ? 'verified_against_statements'
                         : 'ocr_only_no_statement_pdfs',
+                    cloudinary: {
+                        images: imageUploadResults.map((r) => r.secure_url),
+                        pdfs: pdfUploadResults.map((r) => r.secure_url),
+                    },
                 },
                 results,
             });
@@ -194,14 +178,9 @@ app.post(
     }
 );
 
-/** Clear inputs before a new batch (optional query ?clear=1 from dev tools). */
-app.post('/api/reset-assets', (req, res) => {
-    ensureAssetDirs();
-    emptyDir(IMG_DIR);
-    emptyDir(PDF_DIR);
-    res.json({ ok: true });
-});
-
+// ──────────────────────────────────────────────
+// Serve frontend build (if present)
+// ──────────────────────────────────────────────
 const frontendDist = path.join(ROOT, 'frontend', 'dist');
 if (fs.existsSync(frontendDist)) {
     app.use(express.static(frontendDist));
@@ -213,6 +192,9 @@ if (fs.existsSync(frontendDist)) {
     });
 }
 
+// ──────────────────────────────────────────────
+// Error handler
+// ──────────────────────────────────────────────
 app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         return res.status(400).json({ success: false, error: err.message });
@@ -226,7 +208,6 @@ app.use((err, req, res, next) => {
 module.exports = app;
 
 if (!IS_VERCEL) {
-    ensureAssetDirs();
     app.listen(PORT, () => {
         const ui = fs.existsSync(frontendDist);
         console.log(`API listening on http://localhost:${PORT}`);

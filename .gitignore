@@ -2,6 +2,7 @@
 files/
 training_feedback/**/*
 assets/*
+.cursor/**
 
 ### Firebase ###
 .idea

@@ -1,26 +1,24 @@
-const fs = require('fs');
-const path = require('path');
+const { uploadBuffer } = require('./cloudinary');
 
 /**
- * Saves images with low confidence for future retraining
+ * Saves low-confidence images to Cloudinary for future retraining review.
+ * Replaces the old local-disk approach that bloated the project with hundreds of JPEGs.
  */
-function saveForImprovement(fileName, imageBuffer, extractedData, confidence) {
-    // If confidence is below 85%, we save it to review and retrain later
+async function saveForImprovement(fileName, imageBuffer, extractedData, confidence) {
+    // If confidence is below 85%, upload to Cloudinary for review
     if (confidence < 85) {
         try {
-            const feedbackDir = path.resolve(__dirname, '..', 'training_feedback');
-            if (!fs.existsSync(feedbackDir)) fs.mkdirSync(feedbackDir);
+            const publicId = `${Date.now()}_${fileName.replace(/\.[^.]+$/, '')}`;
 
-            const imgPath = path.join(feedbackDir, `${Date.now()}_${fileName}`);
-            fs.writeFileSync(imgPath, imageBuffer);
+            await uploadBuffer(imageBuffer, {
+                folder: 'transanalyzer/training_feedback',
+                publicId,
+                resourceType: 'image',
+            });
 
-            const logPath = path.join(feedbackDir, 'corrections.log');
-            const entry = `[${new Date().toISOString()}] File: ${fileName} | Conf: ${confidence}% | Data: ${JSON.stringify(extractedData)}\n`;
-            fs.appendFileSync(logPath, entry);
-
-            console.log(`⚠️ Low confidence (${confidence}%). Saved to training_feedback for review.`);
+            console.log(`⚠️ Low confidence (${confidence}%). Uploaded to Cloudinary training_feedback for review.`);
         } catch (err) {
-            console.warn(`Low confidence (${confidence}%) — feedback not saved: ${err.message}`);
+            console.warn(`Low confidence (${confidence}%) — feedback upload failed: ${err.message}`);
         }
     }
 }

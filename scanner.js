@@ -1,72 +1,52 @@
-const fs = require('fs');
-const path = require('path');
 const sharp = require('sharp');
-const { PDFParse } = require('pdf-parse');
+const pdf = require('pdf-parse');
 const { getOCRText } = require('./utils/tesseractManager');
 const { saveForImprovement } = require('./utils/improvementLogic');
 
-const DEFAULT_IMG_DIR = path.resolve(__dirname, './assets/images');
-const DEFAULT_PDF_DIR = path.resolve(__dirname, './assets/pdfs');
-
 /**
- * Main application runner
- * @param {{ imageDir?: string, pdfDir?: string }} [options] - Optional dirs (API uses per-job folders).
+ * Main analysis runner.
+ *
+ * Accepts pre-loaded file buffers instead of reading from disk directories.
+ * This is Cloudinary/Vercel-friendly — no local asset directories needed.
+ *
+ * @param {object} options
+ * @param {{ name: string, buffer: Buffer }[]} options.imageBuffers — Image file buffers with filenames
+ * @param {{ name: string, buffer: Buffer }[]} options.pdfBuffers   — PDF file buffers with filenames
+ * @returns {Promise<object[]|object>}
  */
 async function runAnalysis(options = {}) {
-    const IMG_DIR = options.imageDir ? path.resolve(options.imageDir) : DEFAULT_IMG_DIR;
-    const PDF_DIR = options.pdfDir ? path.resolve(options.pdfDir) : DEFAULT_PDF_DIR;
+    const imageBuffers = options.imageBuffers || [];
+    const pdfBuffers = options.pdfBuffers || [];
 
     console.log("=== Starting Financial Document Analyzer ===");
     const extractedDataStore = [];
 
-    // 1. Directory Checks
-    if (!fs.existsSync(IMG_DIR)) {
-        const msg = `Image directory not found at ${IMG_DIR}`;
-        console.error(`❌ ERROR: ${msg}`);
-        return { error: true, code: 'MISSING_IMAGE_DIR', details: msg };
-    }
-    if (!fs.existsSync(PDF_DIR)) {
-        const msg = `PDF directory not found at ${PDF_DIR}`;
-        console.error(`❌ ERROR: ${msg}`);
-        return { error: true, code: 'MISSING_PDF_DIR', details: msg };
-    }
-
-    const imageFiles = fs.readdirSync(IMG_DIR).filter(file =>
-        ['.png', '.jpg', '.jpeg'].includes(path.extname(file).toLowerCase())
-    );
-    
-    const pdfFiles = fs.readdirSync(PDF_DIR).filter(file => 
-        file.toLowerCase().endsWith('.pdf')
-    );
-
-    console.log(`🚀 Found ${imageFiles.length} images and ${pdfFiles.length} PDFs. Starting extraction...`);
+    console.log(`🚀 Received ${imageBuffers.length} images and ${pdfBuffers.length} PDFs. Starting extraction...`);
 
     // --- STEP 1: Process Images ---
-    for (const file of imageFiles) {
+    for (const { name, buffer } of imageBuffers) {
         try {
-            const filePath = path.join(IMG_DIR, file);
-            const processedBuffer = await preprocessImage(filePath);
-            
+            const processedBuffer = await preprocessImage(buffer);
+
             const { text, confidence } = await getOCRText(processedBuffer);
             const data = extractFinancialDataFromText(text);
 
-            saveForImprovement(file, processedBuffer, data, confidence);
+            saveForImprovement(name, processedBuffer, data, confidence);
 
-            extractedDataStore.push({ fileName: file, confidence, ...data });
-            console.log(`✅ Processed Image: ${file} (Conf: ${(confidence ?? 0).toFixed(1)}%)`);
+            extractedDataStore.push({ fileName: name, confidence, ...data });
+            console.log(`✅ Processed Image: ${name} (Conf: ${(confidence ?? 0).toFixed(1)}%)`);
         } catch (error) {
-            console.error(`❌ Error processing image ${file}: ${error.message}`);
+            console.error(`❌ Error processing image ${name}: ${error.message}`);
         }
     }
 
     console.log("\n--- Image Extraction Complete ---");
 
     // --- STEP 2: Verify against ALL PDFs and Filter ---
-    if (extractedDataStore.length > 0 && pdfFiles.length > 0) {
-        console.log(`📄 Analyzing ${pdfFiles.length} PDF files for verification...`);
-        
-        // Get the full report across all PDFs
-        const verificationReport = await verifyDataAgainstMultiplePDFs(extractedDataStore, PDF_DIR, pdfFiles);
+    if (extractedDataStore.length > 0 && pdfBuffers.length > 0) {
+        console.log(`📄 Analyzing ${pdfBuffers.length} PDF files for verification...`);
+
+        const verificationReport = await verifyDataAgainstMultiplePDFs(extractedDataStore, pdfBuffers);
 
         if (verificationReport.error) {
             console.error(`\n❌ PDF ERROR: ${verificationReport.error}`);
@@ -86,12 +66,11 @@ async function runAnalysis(options = {}) {
 
         console.log("\n=== UNMATCHED DATA (REST OF THE DATA) ===");
         console.log(JSON.stringify(unmatchedData, null, 2));
-        
-        // Return only the unmatched data
-        return unmatchedData; 
-    } else if (pdfFiles.length === 0) {
-        console.log("⚠️ No PDFs found in the directory. Skipping verification.");
-        return extractedDataStore; // Return all data since nothing could be matched
+
+        return unmatchedData;
+    } else if (pdfBuffers.length === 0) {
+        console.log("⚠️ No PDFs provided. Skipping verification.");
+        return extractedDataStore;
     } else {
         console.log("⚠️ No data extracted from images. Skipping PDF verification.");
         return [];
@@ -99,33 +78,22 @@ async function runAnalysis(options = {}) {
 }
 
 /**
- * Multi-PDF Verification Logic
+ * Multi-PDF Verification Logic — now works with in-memory buffers.
  */
-async function verifyDataAgainstMultiplePDFs(extractedDataStore, pdfDir, pdfFiles) {
+async function verifyDataAgainstMultiplePDFs(extractedDataStore, pdfBuffers) {
     try {
         const parsedPdfRecords = [];
 
-        // 1. Read and Parse all PDF files into memory
-        for (const pdfFile of pdfFiles) {
-            let parser;
+        for (const { name, buffer } of pdfBuffers) {
             try {
-                const pdfPath = path.join(pdfDir, pdfFile);
-                const dataBuffer = fs.readFileSync(pdfPath);
+                const result = await pdf(buffer);
 
-                parser = new PDFParse({ data: new Uint8Array(dataBuffer) });
-                const result = await parser.getText();
-
-                // Normalize the PDF text for robust searching
                 const pdfText = result.text.replace(/\s+/g, ' ');
                 const normalizedPdf = pdfText.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-                parsedPdfRecords.push({ fileName: pdfFile, normalizedText: normalizedPdf });
+                parsedPdfRecords.push({ fileName: name, normalizedText: normalizedPdf });
             } catch (err) {
-                console.error(`⚠️ Failed to parse PDF ${pdfFile}: ${err.message}`);
-            } finally {
-                if (parser) {
-                    await parser.destroy().catch(() => {});
-                }
+                console.error(`⚠️ Failed to parse PDF ${name}: ${err.message}`);
             }
         }
 
@@ -133,30 +101,26 @@ async function verifyDataAgainstMultiplePDFs(extractedDataStore, pdfDir, pdfFile
             throw new Error("Could not successfully parse any PDF texts.");
         }
 
-        // 2. Map over the extracted image data and check against parsed PDFs
         return extractedDataStore.map(entry => {
             let isMatched = false;
             let matchedPdfName = null;
-            let failureErrors = []; // Holds the specific mismatch reasons
+            let failureErrors = [];
 
-            // Preliminary OCR Failure Check
             const ocrErrors = [];
             if (entry.amount === "Not found") ocrErrors.push("Amount OCR extraction failed.");
             if (entry.date === "Not found") ocrErrors.push("Date OCR extraction failed.");
             if (entry.ibanOrAccount === "Not found") ocrErrors.push("Account/IBAN OCR extraction failed.");
 
             if (ocrErrors.length > 0) {
-                // If OCR failed, it cannot match any PDF
                 failureErrors = ocrErrors;
             } else {
                 const cleanAmount = entry.amount.replace(/[^0-9]/g, '');
                 const cleanDate = entry.date.replace(/[^0-9]/g, '');
                 const cleanAccount = entry.ibanOrAccount.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-                // Check against each PDF. If it finds a match in ANY PDF, break the loop and count as matched.
                 for (const pdf of parsedPdfRecords) {
                     const currentPdfErrors = [];
-                    
+
                     if (!pdf.normalizedText.includes(cleanAmount)) currentPdfErrors.push(`Amount ${entry.amount} missing.`);
                     if (!pdf.normalizedText.includes(cleanDate)) currentPdfErrors.push(`Date ${entry.date} missing.`);
                     if (!pdf.normalizedText.includes(cleanAccount)) currentPdfErrors.push(`Account ${entry.ibanOrAccount} missing.`);
@@ -165,10 +129,8 @@ async function verifyDataAgainstMultiplePDFs(extractedDataStore, pdfDir, pdfFile
                         isMatched = true;
                         matchedPdfName = pdf.fileName;
                         failureErrors = null;
-                        break; 
+                        break;
                     } else {
-                        // Store errors in case it doesn't match ANY pdf. 
-                        // (Usually just "Not found in any PDF" is enough, but tracking helps debug)
                         failureErrors = ["Data not found perfectly in any parsed PDF."];
                     }
                 }
@@ -189,11 +151,10 @@ async function verifyDataAgainstMultiplePDFs(extractedDataStore, pdfDir, pdfFile
 }
 
 /**
- * Image Preprocessing (Sharp)
+ * Image Preprocessing (Sharp) — now accepts a Buffer directly.
  */
-async function preprocessImage(imagePath) {
-    const input = await fs.promises.readFile(imagePath);
-    return await sharp(input)
+async function preprocessImage(inputBuffer) {
+    return await sharp(inputBuffer)
         .resize(2500)
         .grayscale()
         .normalize()
@@ -207,19 +168,25 @@ async function preprocessImage(imagePath) {
 function extractFinancialDataFromText(text) {
     const cleanText = text.replace(/\s+/g, ' ');
 
-    const datePattern = /\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}/;
+    // Match DD/MM/YYYY, DD-MM-YYYY, or DD.MM.YYYY
+    const datePattern = /\b\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}\b/;
     const date = cleanText.match(datePattern)?.[0] || "Not found";
 
+    // Amount extraction: look for numbers with potential thousands separators and decimal points
+    // We filter for values that look like amounts (e.g., at least 2 digits before decimal or large numbers)
     const amountMatches = cleanText.match(/\b\d{1,3}(?:,?\d{3})*(?:\.\d{2})?\b/g) || [];
     const amount = amountMatches.find(m => {
         const numOnly = m.replace(/,/g, '');
-        return numOnly.length >= 5 && !date.includes(m); 
+        // Avoid matching the date as an amount
+        return numOnly.length >= 4 && !date.includes(m);
     }) || "Not found";
 
-    const ibanFuzzyPattern = /PK[A-Z0-9\.\s\-\_]{10,26}/i;
+    // IBAN: PK followed by 22 alphanumeric characters (standard for Pakistan)
+    const ibanPattern = /\bPK[A-Z0-9]{22}\b/i;
+    // Generic account number: 10 to 22 digits
     const digitAccPattern = /\b\d{10,22}\b/;
 
-    const ibanMatch = cleanText.match(ibanFuzzyPattern);
+    const ibanMatch = cleanText.match(ibanPattern);
     const digitMatch = cleanText.match(digitAccPattern);
 
     let finalAccount = "Not found";
@@ -233,11 +200,3 @@ function extractFinancialDataFromText(text) {
 }
 
 module.exports = { runAnalysis };
-
-if (require.main === module) {
-    runAnalysis().then((out) => {
-        if (out && out.error) {
-            process.exitCode = 1;
-        }
-    });
-}

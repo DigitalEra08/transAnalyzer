@@ -203,9 +203,9 @@ export default function App() {
 
   async function runAnalyze() {
     setError(null);
-    setResponse(null);
+    setResponse(null); // Clear previous results immediately
     if (images.length === 0) {
-      setError('Add at least one transaction image before running analysis.');
+      setError('Please add at least one transaction image.');
       return;
     }
     const body = new FormData();
@@ -220,12 +220,12 @@ export default function App() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.details || data.error || `Request failed (${res.status})`);
+        setError(data.error || data.details || `Server error: ${res.status}`);
         return;
       }
       setResponse(data);
     } catch (e) {
-      setError(e.message || 'Network error. Is the API server running on port 3001?');
+      setError('Could not connect to the server. Please ensure the backend is running on port 5001.');
     } finally {
       setLoading(false);
     }
